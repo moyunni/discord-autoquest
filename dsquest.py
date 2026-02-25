@@ -3,7 +3,7 @@ from playwright.async_api import async_playwright
 import os
 import requests
 
-repo = "https://gitverse.ru/api/repos/rawnekoo/discord-autoquest/raw/branch/main/script.js"
+repo = "https://raw.githubusercontent.com/rawneko/discord-autoquest/refs/heads/main/script.js"
 
 def update_script():
     try:
@@ -11,7 +11,7 @@ def update_script():
         if response.status_code == 200:
             with open("script.js", "w", encoding="utf-8") as f:
                 f.write(response.text)
-            print("Файл script.js успешно обновлен до последней версии с GitVerse.")
+            print("Файл script.js успешно обновлен до последней версии с GitHub.")
         else:
             print(f"Не удалось обновить код. Статус: {response.status_code}")
     except Exception as e:
@@ -44,4 +44,5 @@ async def run_quest_script():
             print(f"Ошибка: {e}")
 
 if __name__ == "__main__":
+
     asyncio.run(run_quest_script())
