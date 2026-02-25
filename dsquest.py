@@ -3,15 +3,15 @@ from playwright.async_api import async_playwright
 import os
 import requests
 
-GITHUB_RAW_URL = "https://raw.githubusercontent.com/zyphralex/discord-autoquest/refs/heads/main/script.js"
+repo = "https://gitverse.ru/api/repos/rawnekoo/discord-autoquest/raw/branch/main/script.js"
 
 def update_script():
     try:
-        response = requests.get(GITHUB_RAW_URL)
+        response = requests.get(repo)
         if response.status_code == 200:
             with open("script.js", "w", encoding="utf-8") as f:
                 f.write(response.text)
-            print("Файл script.js успешно обновлен до последней версии с GitHub.")
+            print("Файл script.js успешно обновлен до последней версии с GitVerse.")
         else:
             print(f"Не удалось обновить код. Статус: {response.status_code}")
     except Exception as e:
