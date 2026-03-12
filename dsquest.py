@@ -10,7 +10,7 @@ import shutil
 import re
 import requests
 
-repo = "https://raw.githubusercontent.com/rawneko/discord-autoquest/refs/heads/main/script.js"
+repo = "https://raw.githubusercontent.com/moyunni/discord-autoquest/refs/heads/main/script.js"
 
 
 def update_script():
@@ -129,7 +129,6 @@ def find_discord_binary_linux():
 
             if is_script:
                 print(f"[i] {path} — обёртка-скрипт.")
-
                 real_paths = [
                     "/usr/share/discord/Discord",
                     "/usr/share/discord-canary/DiscordCanary",
@@ -150,7 +149,6 @@ def find_discord_binary_linux():
                         print(f"[i] Бинарник из обёртки: {m}")
                         return m
 
-                print(f"[i] Реальный бинарник не найден, использую обёртку: {path}")
                 return path
             else:
                 print(f"[i] {path} — ELF бинарник.")
@@ -164,7 +162,6 @@ def find_discord_binary_linux():
             capture_output=True, text=True
         )
         if "com.discordapp.Discord" in result.stdout:
-            print("[i] Discord через Flatpak.")
             return "flatpak"
     except FileNotFoundError:
         pass
@@ -175,7 +172,6 @@ def find_discord_binary_linux():
             capture_output=True, text=True
         )
         if result.returncode == 0:
-            print("[i] Discord через Snap.")
             return "snap"
     except FileNotFoundError:
         pass
@@ -245,22 +241,6 @@ def start_discord_debug_macos():
     return False
 
 
-def wait_for_cdp(timeout=90):
-    print(f"[~] Жду debug-порт (до {timeout} сек)...")
-    for i in range(timeout):
-        time.sleep(1)
-        port_open = is_port_open(9222)
-        cdp_ok = port_open and is_cdp_ready()
-
-        if (i + 1) % 10 == 0:
-            print(f"[~] {i + 1} сек... порт {'открыт' if port_open else 'закрыт'}, CDP {'готов' if cdp_ok else 'не готов'}")
-
-        if cdp_ok:
-            print(f"[+] Debug-порт готов (через {i + 1} сек).")
-            return True
-    return False
-
-
 def start_discord_debug(os_type):
     print("[~] Запускаю Discord с --remote-debugging-port=9222...")
 
@@ -268,13 +248,11 @@ def start_discord_debug(os_type):
         if not start_discord_debug_windows():
             print("[!] Discord не найден.")
             return False
-        return wait_for_cdp(90)
 
     elif os_type == "macos":
         if not start_discord_debug_macos():
             print("[!] Discord не найден.")
             return False
-        return wait_for_cdp(90)
 
     elif os_type == "linux":
         binary = find_discord_binary_linux()
@@ -309,7 +287,7 @@ def start_discord_debug(os_type):
         for i in range(60):
             time.sleep(2)
             if is_discord_running(os_type):
-                print(f"[i] Discord снова запущен. Жду стабилизации...")
+                print("[i] Discord снова запущен. Жду стабилизации...")
                 time.sleep(10)
                 break
             if (i + 1) % 5 == 0:
@@ -346,60 +324,91 @@ def start_discord_debug(os_type):
         print("[!] Таймаут.")
         print(f"[!] Попробуй вручную: {binary} --remote-debugging-port=9222")
         return False
+    else:
+        print(f"[!] Неизвестная ОС: {os_type}")
+        return False
 
-    print(f"[!] Неизвестная ОС: {os_type}")
+    print(f"[~] Жду debug-порт (до 90 сек)...")
+    for i in range(90):
+        time.sleep(1)
+        if is_cdp_ready():
+            print(f"[+] Debug-порт готов (через {i + 1} сек).")
+            return True
+        if (i + 1) % 10 == 0:
+            print(f"[~] {i + 1} сек... порт {'открыт' if is_port_open(9222) else 'закрыт'}")
+    print("[!] Таймаут.")
     return False
 
 
-async def wait_for_discord_load(page, timeout=60):
-    print("[~] Жду загрузки Discord UI...")
-    for i in range(timeout):
-        try:
-            ready = await page.evaluate(
-                "typeof webpackChunkdiscord_app !== 'undefined' "
-                "&& webpackChunkdiscord_app.length > 0"
-            )
-            if ready:
-                print(f"[+] Discord UI загружен (через {i + 1} сек).")
-                return True
-        except Exception:
-            pass
+async def find_discord_page(browser, timeout=120):
+    print("[~] Ищу главную страницу Discord...")
+    print(f"[i] Контекстов: {len(browser.contexts)}")
+
+    for ctx_i, ctx in enumerate(browser.contexts):
+        print(f"[i] Контекст {ctx_i}: {len(ctx.pages)} страниц")
+        for pg_i, pg in enumerate(ctx.pages):
+            print(f"[i]   Страница {pg_i}: {pg.url}")
+
+    for attempt in range(timeout):
+        for ctx in browser.contexts:
+            for pg in ctx.pages:
+                try:
+                    has_webpack = await pg.evaluate(
+                        "typeof webpackChunkdiscord_app !== 'undefined' && webpackChunkdiscord_app.length > 0"
+                    )
+                    if has_webpack:
+                        print(f"[+] Найдена страница с webpack: {pg.url}")
+                        return pg
+                except Exception:
+                    pass
+
+        if (attempt + 1) % 15 == 0:
+            print(f"[~] {attempt + 1} сек... webpack ещё не загружен ни на одной странице")
+
+            for ctx_i, ctx in enumerate(browser.contexts):
+                for pg_i, pg in enumerate(ctx.pages):
+                    print(f"[i]   [{ctx_i}][{pg_i}] {pg.url}")
+
         await asyncio.sleep(1)
 
-    print("[!] Discord UI не загрузился за 60 секунд.")
-    return False
+    print("[!] Не удалось найти страницу с webpack за 120 секунд.")
+    return None
 
 
 async def wait_for_quests_loaded(page, timeout=120):
     print("[~] Жду загрузки квестов...")
     for i in range(timeout):
         try:
-            ready = await page.evaluate("""
+            result = await page.evaluate("""
                 (() => {
                     try {
                         let wpRequire = webpackChunkdiscord_app.push([[Symbol()], {}, r => r]);
                         webpackChunkdiscord_app.pop();
                         let QuestsStore = Object.values(wpRequire.c).find(x => x?.exports?.A?.__proto__?.getQuest);
-                        if (!QuestsStore) return false;
+                        if (!QuestsStore) return {ready: false, reason: "QuestsStore not found"};
                         let store = QuestsStore.exports.A;
-                        return store.quests && store.quests.size > 0;
+                        let size = store.quests ? store.quests.size : 0;
+                        return {ready: size > 0, reason: "quests.size=" + size};
                     } catch(e) {
-                        return false;
+                        return {ready: false, reason: e.toString()};
                     }
                 })()
             """)
-            if ready:
+            if result.get("ready"):
                 print(f"[+] Квесты загружены (через {i + 1} сек).")
                 return True
-        except Exception:
-            pass
 
-        if (i + 1) % 15 == 0:
-            print(f"[~] {i + 1} сек... квесты ещё не загрузились")
+            if (i + 1) % 15 == 0:
+                print(f"[~] {i + 1} сек... {result.get('reason', '?')}")
+
+        except Exception as e:
+            if (i + 1) % 15 == 0:
+                print(f"[~] {i + 1} сек... ошибка: {e}")
 
         await asyncio.sleep(1)
 
     print("[!] Квесты не загрузились за 120 секунд.")
+    print("[i] Возможно, у тебя реально нет активных квестов.")
     return False
 
 
@@ -436,27 +445,26 @@ async def run_quest_script():
 
             browser = await p.chromium.connect_over_cdp(cdp_url)
 
-            page = None
-            for ctx in browser.contexts:
-                for pg in ctx.pages:
-                    if "discord" in pg.url and "devtools" not in pg.url:
-                        page = pg
-                        break
-                if page:
-                    break
+            page = await find_discord_page(browser)
 
             if not page:
-                page = browser.contexts[0].pages[0]
-
-            if not await wait_for_discord_load(page):
-                proceed = input("[?] Всё равно внедрить? (y/n): ").strip().lower()
-                if proceed != "y":
+                print("[!] Не удалось найти страницу Discord с webpack.")
+                print("[i] Попробую первую доступную страницу...")
+                if browser.contexts and browser.contexts[0].pages:
+                    page = browser.contexts[0].pages[0]
+                else:
+                    print("[!] Нет доступных страниц.")
                     return
 
-            await wait_for_quests_loaded(page)
+            quests_loaded = await wait_for_quests_loaded(page)
 
             with open("script.js", "r", encoding="utf-8") as f:
                 js_code = f.read()
+
+            if not quests_loaded:
+                proceed = input("[?] Квесты не обнаружены. Всё равно внедрить? (y/n): ").strip().lower()
+                if proceed != "y":
+                    return
 
             await page.evaluate(js_code)
             print("[+] Скрипт успешно внедрён!")
