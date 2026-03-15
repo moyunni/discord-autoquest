@@ -8,9 +8,11 @@ import time
 import glob
 import shutil
 import re
+import signal
 import requests
 
 repo = "https://raw.githubusercontent.com/moyunni/discord-autoquest/refs/heads/main/script.js"
+running = True
 
 
 def update_script():
@@ -37,6 +39,19 @@ def detect_os():
     return system
 
 
+def get_discord_pids():
+    try:
+        result = subprocess.run(
+            ["pgrep", "-fi", "discord"],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            return [int(pid) for pid in result.stdout.strip().split("\n") if pid.strip()]
+    except Exception:
+        pass
+    return []
+
+
 def is_discord_running(os_type):
     try:
         if os_type == "windows":
@@ -46,11 +61,7 @@ def is_discord_running(os_type):
             )
             return "Discord.exe" in result.stdout
         else:
-            result = subprocess.run(
-                ["pgrep", "-fi", "discord"],
-                capture_output=True, text=True
-            )
-            return result.returncode == 0
+            return len(get_discord_pids()) > 0
     except Exception:
         return False
 
@@ -69,11 +80,18 @@ def kill_discord(os_type):
                         stderr=subprocess.DEVNULL,
                     )
             else:
-                subprocess.run(
-                    ["pkill", "-9", "-fi", "discord"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
+                pids = get_discord_pids()
+                for pid in pids:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    except PermissionError:
+                        subprocess.run(
+                            ["kill", "-9", str(pid)],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
                 subprocess.run(
                     ["flatpak", "kill", "com.discordapp.Discord"],
                     stdout=subprocess.DEVNULL,
@@ -92,6 +110,9 @@ def kill_discord(os_type):
 
     if is_discord_running(os_type):
         print("[!] Не удалось полностью закрыть Discord.")
+        pids = get_discord_pids()
+        if pids:
+            print(f"[i] Оставшиеся PID: {pids}")
         return False
 
     print("[+] Discord закрыт.")
@@ -188,7 +209,12 @@ def launch_discord_linux(binary):
         cmd = [binary, "--remote-debugging-port=9222"]
 
     print(f"[~] Запускаю: {' '.join(cmd)}")
-    return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
 
 
 def start_discord_debug_windows():
@@ -236,6 +262,7 @@ def start_discord_debug_macos():
                 [p, "--remote-debugging-port=9222"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                start_new_session=True,
             )
             return True
     return False
@@ -260,18 +287,11 @@ def start_discord_debug(os_type):
             print("[!] Discord не найден.")
             return False
 
-        proc = launch_discord_linux(binary)
+        launch_discord_linux(binary)
 
         print("[~] Попытка 1: ждём debug-порт...")
         for i in range(30):
             time.sleep(1)
-
-            if proc.poll() is not None:
-                stderr = proc.stderr.read().decode(errors="replace") if proc.stderr else ""
-                print(f"[!] Процесс завершился (код {proc.returncode}). Вероятно, обновление.")
-                if stderr.strip():
-                    print(f"[i] stderr: {stderr[:300]}")
-                break
 
             if is_cdp_ready():
                 print(f"[+] Debug-порт готов (через {i + 1} сек).")
@@ -283,36 +303,30 @@ def start_discord_debug(os_type):
         if is_cdp_ready():
             return True
 
-        print("[~] Жду пока Discord закончит обновление...")
-        for i in range(60):
-            time.sleep(2)
-            if is_discord_running(os_type):
-                print("[i] Discord снова запущен. Жду стабилизации...")
-                time.sleep(10)
-                break
-            if (i + 1) % 5 == 0:
-                print(f"[~] {(i+1)*2} сек... жду Discord...")
-        else:
-            print("[!] Discord не появился после обновления.")
+        if not is_discord_running(os_type):
+            print("[!] Discord не запустился.")
             return False
 
-        print("[~] Убиваю Discord (запущен без debug-флага)...")
+        print("[~] Discord запущен, но порт не открыт. Вероятно, обновление.")
+        print("[~] Жду завершения обновления...")
+
+        for i in range(60):
+            time.sleep(2)
+            if is_cdp_ready():
+                print("[+] Debug-порт появился после обновления.")
+                return True
+            if (i + 1) % 5 == 0:
+                print(f"[~] {(i+1)*2} сек...")
+
+        print("[~] Порт так и не открылся. Перезапускаю Discord...")
         kill_discord(os_type)
         time.sleep(3)
 
         print("[~] Попытка 2: запускаю Discord с debug-флагом...")
-        proc2 = launch_discord_linux(binary)
+        launch_discord_linux(binary)
 
         for i in range(60):
             time.sleep(1)
-
-            if proc2.poll() is not None:
-                stderr = proc2.stderr.read().decode(errors="replace") if proc2.stderr else ""
-                print(f"[!] Процесс снова умер (код {proc2.returncode}).")
-                if stderr:
-                    print(f"[i] stderr: {stderr[:500]}")
-                print(f"[!] Попробуй вручную: {binary} --remote-debugging-port=9222")
-                return False
 
             if is_cdp_ready():
                 print(f"[+] Debug-порт готов (через {i + 1} сек).")
@@ -342,12 +356,10 @@ def start_discord_debug(os_type):
 
 async def find_discord_page(browser, timeout=120):
     print("[~] Ищу главную страницу Discord...")
-    print(f"[i] Контекстов: {len(browser.contexts)}")
 
     for ctx_i, ctx in enumerate(browser.contexts):
-        print(f"[i] Контекст {ctx_i}: {len(ctx.pages)} страниц")
         for pg_i, pg in enumerate(ctx.pages):
-            print(f"[i]   Страница {pg_i}: {pg.url}")
+            print(f"[i] Контекст {ctx_i}, страница {pg_i}: {pg.url}")
 
     for attempt in range(timeout):
         for ctx in browser.contexts:
@@ -363,15 +375,14 @@ async def find_discord_page(browser, timeout=120):
                     pass
 
         if (attempt + 1) % 15 == 0:
-            print(f"[~] {attempt + 1} сек... webpack ещё не загружен ни на одной странице")
-
+            print(f"[~] {attempt + 1} сек... webpack не найден")
             for ctx_i, ctx in enumerate(browser.contexts):
                 for pg_i, pg in enumerate(ctx.pages):
                     print(f"[i]   [{ctx_i}][{pg_i}] {pg.url}")
 
         await asyncio.sleep(1)
 
-    print("[!] Не удалось найти страницу с webpack за 120 секунд.")
+    print("[!] Страница с webpack не найдена за 120 секунд.")
     return None
 
 
@@ -412,7 +423,65 @@ async def wait_for_quests_loaded(page, timeout=120):
     return False
 
 
+CONSOLE_NOISE = [
+    "report only",
+    "content security policy",
+    "refused to load",
+    "refused to connect",
+    "refused to execute",
+    "refused to create",
+    "font-weight: bold",
+    "color: purple",
+    "%c[",
+    "was preloaded using link preload",
+    "postmessagetransport",
+    "recaptcha",
+    "analyticstrackimpressioncontext",
+    "failed to load resource",
+]
+
+
+def is_quest_message(text):
+    keywords = [
+        "quest",
+        "spoofing",
+        "spoofed",
+        "progress",
+        "completed",
+        "minutes",
+        "stream",
+        "heartbeat",
+    ]
+    text_lower = text.lower()
+    return any(k in text_lower for k in keywords)
+
+
+def on_console(msg):
+    text = msg.text
+    text_lower = text.lower()
+
+    if text_lower.strip() in ("", "undefined", "null", "true", "false"):
+        return
+
+    if any(noise in text_lower for noise in CONSOLE_NOISE):
+        return
+
+    msg_type = msg.type
+
+    if is_quest_message(text):
+        print(f"[QUEST] {text}")
+        return
+
+    if msg_type == "error":
+        print(f"[JS ERROR] {text}")
+    elif msg_type == "warning":
+        return
+    else:
+        print(f"[JS] {text}")
+
+
 async def run_quest_script():
+    global running
     update_script()
 
     choice = input("\n[?] Использовать автоматический инжект? (y/n): ").strip().lower()
@@ -434,6 +503,7 @@ async def run_quest_script():
             print("[!] Debug-порт недоступен.")
             return
 
+    browser = None
     async with async_playwright() as p:
         try:
             response = requests.get("http://127.0.0.1:9222/json/version")
@@ -444,36 +514,82 @@ async def run_quest_script():
                 return
 
             browser = await p.chromium.connect_over_cdp(cdp_url)
+            browser.on("disconnected", lambda: set_stopped())
 
             page = await find_discord_page(browser)
 
             if not page:
                 print("[!] Не удалось найти страницу Discord с webpack.")
-                print("[i] Попробую первую доступную страницу...")
                 if browser.contexts and browser.contexts[0].pages:
                     page = browser.contexts[0].pages[0]
+                    print(f"[i] Использую первую страницу: {page.url}")
                 else:
                     print("[!] Нет доступных страниц.")
                     return
 
-            quests_loaded = await wait_for_quests_loaded(page)
+            page.on("console", on_console)
 
-            with open("script.js", "r", encoding="utf-8") as f:
-                js_code = f.read()
+            quests_loaded = await wait_for_quests_loaded(page)
 
             if not quests_loaded:
                 proceed = input("[?] Квесты не обнаружены. Всё равно внедрить? (y/n): ").strip().lower()
                 if proceed != "y":
                     return
 
+            with open("script.js", "r", encoding="utf-8") as f:
+                js_code = f.read()
+
             await page.evaluate(js_code)
-            print("[+] Скрипт успешно внедрён!")
+            print("[+] Скрипт внедрён.")
+            print("[~] Слушаю вывод скрипта... (Ctrl+C для выхода)")
 
-            await asyncio.sleep(1000)
+            while running:
+                await asyncio.sleep(1)
 
+        except KeyboardInterrupt:
+            pass
         except Exception as e:
-            print(f"[!] Ошибка: {e}")
+            err = str(e).lower()
+            if any(x in err for x in ("disconnected", "closed", "target closed", "connection closed")):
+                print("[i] Соединение с Discord закрыто.")
+            else:
+                print(f"[!] Ошибка: {e}")
+        finally:
+            if browser:
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
+            print("[i] Готово.")
+
+
+def set_stopped():
+    global running
+    running = False
+
+
+def main():
+    loop = asyncio.new_event_loop()
+
+    def handle_signal():
+        global running
+        running = False
+
+    if platform.system().lower() != "windows":
+        loop.add_signal_handler(signal.SIGINT, handle_signal)
+        loop.add_signal_handler(signal.SIGTERM, handle_signal)
+
+    try:
+        loop.run_until_complete(run_quest_script())
+    except KeyboardInterrupt:
+        pass
+    finally:
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception:
+            pass
+        loop.close()
 
 
 if __name__ == "__main__":
-    asyncio.run(run_quest_script())
+    main()
