@@ -12,7 +12,7 @@ A high-performance Python script that automates Discord quests by injecting a cu
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/rawneko/discord-autoquest
+   git clone https://codeberg.org/moyunni/discord-autoquest
    cd discord-autoquest
    ```
 
