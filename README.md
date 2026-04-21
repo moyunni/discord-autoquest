@@ -2,6 +2,14 @@
 
 A high-performance Python script that automates Discord quests by injecting a custom JavaScript engine directly into the Discord client via Chrome DevTools Protocol (CDP).
 
+# Repository Mirrors:
+
+[GitHub](https://github.com/moyunni/discord-autoquest),
+[GitVerse](https://gitverse.ru/chinchilla/discord-autoquest) and
+[Codeberg](https://codeberg.org/moyunni/discord-autoquest)
+
+**Updates are released faster on codeberg. 10 minutes after writing the repository to codeberg, the changes will go to the mirrors.**
+
 ## 📋 Prerequisites
 
 * Python 3.8+
